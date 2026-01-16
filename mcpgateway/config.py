@@ -1308,7 +1308,11 @@ class Settings(BaseSettings):
         "x-user-id",
         "x-api-key",
         "cookie",
+        "x-mcp-session-id"
     ]
+    mcpgateway_session_affinity_enabled: bool = False  # Global session affinity toggle
+    mcpgateway_session_affinity_ttl: int = 3600  # Session affinity binding TTL
+    mcpgateway_session_affinity_max_sessions: int = 1  # Max sessions per identity for affinity
 
     # Prompts
     prompt_cache_size: int = 100
