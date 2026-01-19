@@ -298,6 +298,7 @@ class SessionRegistry(SessionBackend):
         super().__init__(backend=backend, redis_url=redis_url, database_url=database_url, session_ttl=session_ttl, message_ttl=message_ttl)
         self._sessions: Dict[str, Any] = {}  # Local transport cache
         self._client_capabilities: Dict[str, Dict[str, Any]] = {}  # Client capabilities by session_id
+        self._upstream_bindings: Dict[str, Dict[str, Any]] = {}  # Session affinity: downstream_session_id -> upstream binding
         self._lock = asyncio.Lock()
         self._cleanup_task: Task | None = None
 
@@ -616,6 +617,10 @@ class SessionRegistry(SessionBackend):
             if session_id in self._client_capabilities:
                 self._client_capabilities.pop(session_id)
                 logger.debug(f"Removed capabilities for session {session_id}")
+            # Also clean up upstream affinity binding (local cache)
+            if session_id in self._upstream_bindings:
+                del self._upstream_bindings[session_id]
+                logger.debug(f"Removed local affinity binding for session {session_id}")
 
         # Disconnect transport if found
         if transport:
@@ -630,6 +635,8 @@ class SessionRegistry(SessionBackend):
                 return
             try:
                 await self._redis.delete(f"mcp:session:{session_id}")
+                # Also remove affinity binding from Redis
+                await self._redis.delete(f"mcp:affinity:{session_id}")
                 # Notify other workers
                 await self._redis.publish("mcp_session_events", orjson.dumps({"type": "remove", "session_id": session_id, "timestamp": time.time()}))
             except Exception as e:
@@ -1505,6 +1512,135 @@ class SessionRegistry(SessionBackend):
                     if session_id in self._sessions:
                         capable_sessions.append(session_id)
             return capable_sessions
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # Session Affinity Methods
+    # ═══════════════════════════════════════════════════════════════════════════
+
+    async def bind_upstream_session(
+        self,
+        downstream_session_id: str,
+        upstream_url: str,
+        upstream_identity_hash: str,
+        upstream_transport_type: str,
+        worker_id: Optional[str] = None,
+    ) -> None:
+        """Bind a downstream session to a specific upstream pool key.
+
+        Creates an affinity binding that ensures all subsequent requests from
+        the same downstream session are routed to the same upstream MCP session.
+        This is essential for stateful agentic workflows where upstream servers
+        maintain session state across multiple tool calls.
+
+        Args:
+            downstream_session_id: The downstream client's session ID (SSE or streamable HTTP).
+            upstream_url: URL of the upstream MCP server.
+            upstream_identity_hash: Identity hash used for pool key.
+            upstream_transport_type: Transport type (SSE, STREAMABLE_HTTP).
+            worker_id: Optional worker ID for multi-worker routing.
+        """
+        binding = {
+            "upstream_url": upstream_url,
+            "upstream_identity_hash": upstream_identity_hash,
+            "upstream_transport_type": upstream_transport_type,
+            "worker_id": worker_id or "local",
+            "created_at": time.time(),
+        }
+
+        async with self._lock:
+            self._upstream_bindings[downstream_session_id] = binding
+
+        if self._backend == "redis":
+            if not self._redis:
+                logger.warning(f"Redis client not initialized, affinity binding for {downstream_session_id} is local only")
+                return
+            try:
+                await self._redis.setex(
+                    f"mcp:affinity:{downstream_session_id}",
+                    self._session_ttl,
+                    orjson.dumps(binding),
+                )
+                logger.debug(f"Stored affinity binding in Redis for session {downstream_session_id}")
+            except Exception as e:
+                logger.error(f"Redis error storing affinity binding for {downstream_session_id}: {e}")
+
+        elif self._backend == "database":
+            # For database backend, we could store in a separate table
+            # For now, just use local storage (single-worker compatible)
+            logger.debug(f"Affinity binding for {downstream_session_id} stored locally (database backend)")
+
+    async def get_upstream_binding(self, downstream_session_id: str) -> Optional[Dict[str, Any]]:
+        """Get the upstream binding for a downstream session.
+
+        Retrieves the affinity binding that maps a downstream session to its
+        bound upstream pool key. Used to ensure session affinity across
+        multiple tool/resource/prompt calls.
+
+        Args:
+            downstream_session_id: The downstream client's session ID.
+
+        Returns:
+            Binding dict with upstream_url, upstream_identity_hash, upstream_transport_type,
+            worker_id, and created_at. Returns None if no binding exists.
+        """
+        # Check local cache first
+        async with self._lock:
+            if downstream_session_id in self._upstream_bindings:
+                return self._upstream_bindings[downstream_session_id]
+
+        # Check Redis for distributed deployments
+        if self._backend == "redis":
+            if not self._redis:
+                return None
+            try:
+                data = await self._redis.get(f"mcp:affinity:{downstream_session_id}")
+                if data:
+                    binding = orjson.loads(data)
+                    # Cache locally for faster subsequent lookups
+                    async with self._lock:
+                        self._upstream_bindings[downstream_session_id] = binding
+                    return binding
+            except Exception as e:
+                logger.error(f"Redis error getting affinity binding for {downstream_session_id}: {e}")
+
+        return None
+
+    async def remove_upstream_binding(self, downstream_session_id: str) -> None:
+        """Remove the upstream binding for a downstream session.
+
+        Called when a downstream session is closed to clean up the affinity
+        binding. This prevents stale bindings from accumulating.
+
+        Args:
+            downstream_session_id: The downstream client's session ID.
+        """
+        # Remove from local cache
+        async with self._lock:
+            if downstream_session_id in self._upstream_bindings:
+                del self._upstream_bindings[downstream_session_id]
+                logger.debug(f"Removed local affinity binding for session {downstream_session_id}")
+
+        # Remove from Redis
+        if self._backend == "redis":
+            if not self._redis:
+                return
+            try:
+                await self._redis.delete(f"mcp:affinity:{downstream_session_id}")
+                logger.debug(f"Removed Redis affinity binding for session {downstream_session_id}")
+            except Exception as e:
+                logger.error(f"Redis error removing affinity binding for {downstream_session_id}: {e}")
+
+    async def has_upstream_binding(self, downstream_session_id: str) -> bool:
+        """Check if a downstream session has an upstream binding.
+
+        Args:
+            downstream_session_id: The downstream client's session ID.
+
+        Returns:
+            True if a binding exists, False otherwise.
+        """
+        binding = await self.get_upstream_binding(downstream_session_id)
+        return binding is not None
 
     async def generate_response(self, message: Dict[str, Any], transport: SSETransport, server_id: Optional[str], user: Dict[str, Any], base_url: str) -> None:
         """Generate and send response for incoming MCP protocol message.
