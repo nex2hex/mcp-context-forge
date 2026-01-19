@@ -73,6 +73,20 @@ from mcpgateway.services.audit_trail_service import get_audit_trail_service
 from mcpgateway.services.event_service import EventService
 from mcpgateway.services.logging_service import LoggingService
 from mcpgateway.services.mcp_session_pool import get_mcp_session_pool, TransportType
+
+# Session affinity: import session_registry for upstream binding tracking
+# This enables multi-worker coordination and explicit session tracking
+session_registry = None  # Lazy import to avoid circular dependencies
+
+
+def _get_session_registry():
+    """Lazy import of session_registry to avoid circular dependencies."""
+    global session_registry
+    if session_registry is None:
+        from mcpgateway.cache.session_registry import session_registry as _sr  # pylint: disable=import-outside-toplevel
+
+        session_registry = _sr
+    return session_registry
 from mcpgateway.services.metrics_cleanup_service import delete_metrics_in_batches, pause_rollup_during_purge
 from mcpgateway.services.metrics_query_service import get_top_performers_combined
 from mcpgateway.services.oauth_manager import OAuthManager
@@ -2975,6 +2989,26 @@ class ToolService:
                                     user_identity=app_user_email,
                                     gateway_id=gateway_id_str,
                                 ) as pooled:
+                                    # Session affinity: bind downstream session to upstream pool key
+                                    # This enables multi-worker coordination and explicit tracking
+                                    downstream_session_id = headers.get("x-mcp-session-id") if headers else None
+                                    if downstream_session_id and settings.mcp_session_pool_enabled:
+                                        try:
+                                            sr = _get_session_registry()
+                                            if sr and not await sr.has_upstream_binding(downstream_session_id):
+                                                # First call for this session - create binding
+                                                await sr.bind_upstream_session(
+                                                    downstream_session_id=downstream_session_id,
+                                                    upstream_url=server_url,
+                                                    upstream_identity_hash=pooled.identity_key if hasattr(pooled, "identity_key") else "unknown",
+                                                    upstream_transport_type="SSE",
+                                                    worker_id=None,  # TODO: Add worker ID for multi-worker deployments
+                                                )
+                                                logger.debug(f"Session affinity: bound {downstream_session_id[:8]}... to upstream SSE session")
+                                        except Exception as e:
+                                            # Don't fail the tool call if binding fails
+                                            logger.warning(f"Session affinity binding failed (non-fatal): {e}")
+
                                     tool_call_result = await pooled.session.call_tool(tool_name_original, arguments, meta=meta_data)
                             else:
                                 # Non-pooled path: safe to add per-request headers
@@ -3076,6 +3110,26 @@ class ToolService:
                                     user_identity=app_user_email,
                                     gateway_id=gateway_id_str,
                                 ) as pooled:
+                                    # Session affinity: bind downstream session to upstream pool key
+                                    # This enables multi-worker coordination and explicit tracking
+                                    downstream_session_id = headers.get("x-mcp-session-id") if headers else None
+                                    if downstream_session_id and settings.mcp_session_pool_enabled:
+                                        try:
+                                            sr = _get_session_registry()
+                                            if sr and not await sr.has_upstream_binding(downstream_session_id):
+                                                # First call for this session - create binding
+                                                await sr.bind_upstream_session(
+                                                    downstream_session_id=downstream_session_id,
+                                                    upstream_url=server_url,
+                                                    upstream_identity_hash=pooled.identity_key if hasattr(pooled, "identity_key") else "unknown",
+                                                    upstream_transport_type="STREAMABLE_HTTP",
+                                                    worker_id=None,  # TODO: Add worker ID for multi-worker deployments
+                                                )
+                                                logger.debug(f"Session affinity: bound {downstream_session_id[:8]}... to upstream STREAMABLE_HTTP session")
+                                        except Exception as e:
+                                            # Don't fail the tool call if binding fails
+                                            logger.warning(f"Session affinity binding failed (non-fatal): {e}")
+
                                     tool_call_result = await pooled.session.call_tool(tool_name_original, arguments, meta=meta_data)
                             else:
                                 # Non-pooled path: safe to add per-request headers
