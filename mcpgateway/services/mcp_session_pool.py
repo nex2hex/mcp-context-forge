@@ -496,6 +496,52 @@ class MCPSessionPool:  # pylint: disable=too-many-instance-attributes
 
         user_id = user_identity or "anonymous"
         pool_key = self._make_pool_key(url, headers, transport_type, user_id, gateway_id)
+
+        # Session affinity: For multi-worker deployments, check if session is bound elsewhere
+        # If a binding exists and we don't have the pool locally, we're on the wrong worker
+        downstream_session_id = headers.get("x-mcp-session-id") if headers else None
+        if downstream_session_id:
+            try:
+                # Lazy import to avoid circular dependency
+                from mcpgateway.cache.session_registry import session_registry  # pylint: disable=import-outside-toplevel
+
+                binding = await session_registry.get_upstream_binding(downstream_session_id)
+                if binding:
+                    # Verify identity hash matches the binding
+                    bound_identity_hash = binding.get("upstream_identity_hash")
+                    current_identity_hash = pool_key[2]  # pool_key = (user_hash, url, identity_hash, transport)
+
+                    if bound_identity_hash and bound_identity_hash != current_identity_hash:
+                        logger.warning(
+                            f"Session affinity: identity hash mismatch for session {downstream_session_id[:8]}... "
+                            f"(bound to {bound_identity_hash[:8]}..., current {current_identity_hash[:8]}...). "
+                            f"Auth headers may have changed unexpectedly."
+                        )
+
+                    # Binding exists - check if we have this pool_key locally
+                    if pool_key not in self._pools:
+                        # Pool doesn't exist on this worker - session is on another worker
+                        bound_worker = binding.get("worker_id", "unknown")
+                        current_worker = os.getenv("WORKER_ID", "local")
+                        logger.error(
+                            f"Session affinity violation: session {downstream_session_id[:8]}... "
+                            f"is bound to worker '{bound_worker}' (pool not found locally), "
+                            f"but request received on worker '{current_worker}'. "
+                            f"Configure load balancer with sticky sessions based on x-mcp-session-id."
+                        )
+                        raise RuntimeError(
+                            f"Session not found on this worker. Bound to '{bound_worker}'. "
+                            f"Configure sticky sessions in load balancer."
+                        )
+                    # Pool exists locally - we're the right worker
+                    logger.debug(f"Session affinity: found session {downstream_session_id[:8]}... in local pool")
+            except RuntimeError:
+                # Re-raise session affinity violations
+                raise
+            except Exception as e:
+                # Don't fail requests if affinity check fails for other reasons
+                logger.warning(f"Session affinity check failed (non-fatal): {e}")
+
         pool = await self._get_or_create_pool(pool_key)
 
         # Update pool key last used time IMMEDIATELY after getting pool
@@ -526,6 +572,11 @@ class MCPSessionPool:  # pylint: disable=too-many-instance-attributes
             if await self._validate_session(pooled):
                 pooled.last_used = time.time()
                 pooled.use_count += 1
+                # Ensure identity_key is set for session affinity tracking
+                # (may be missing on older cached sessions created before this feature)
+                if not hasattr(pooled, "identity_key") or pooled.identity_key is None:
+                    pooled.identity_key = pool_key[2]
+                    pooled.user_identity = user_id
                 self._hits += 1
                 async with lock:
                     self._active[pool_key].add(pooled)

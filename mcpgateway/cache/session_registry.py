@@ -53,6 +53,7 @@ import asyncio
 from asyncio import Task
 from datetime import datetime, timedelta, timezone
 import logging
+import os
 import time
 import traceback
 from typing import Any, Dict, Optional
@@ -875,6 +876,22 @@ class SessionRegistry(SessionBackend):
 
         if self._backend == "none":
             pass
+
+        # Session affinity: Check if this session is bound to this worker
+        # For multi-worker deployments, skip processing if session is on another worker
+        binding = await self.get_upstream_binding(session_id)
+        if binding:
+            # Check if we have the session transport locally
+            transport = self.get_session_sync(session_id)
+            if not transport:
+                # We don't have the transport locally - session is on another worker
+                bound_worker = binding.get("worker_id", "unknown")
+                current_worker = os.getenv("WORKER_ID", "local")
+                logger.debug(
+                    f"Session affinity: skipping message for session {session_id[:8]}... "
+                    f"(bound to worker '{bound_worker}', current worker '{current_worker}', transport not found locally)"
+                )
+                return  # Don't process messages for sessions on other workers
 
         elif self._backend == "memory":
             transport = self.get_session_sync(session_id)
