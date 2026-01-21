@@ -1105,6 +1105,9 @@ class Settings(BaseSettings):
     metrics_cache_enabled: bool = Field(default=True, description="Enable in-memory caching for aggregate metrics queries")
     metrics_cache_ttl_seconds: int = Field(default=60, ge=1, le=300, description="TTL for cached aggregate metrics in seconds")
 
+    # Maximum time (ms) SQLite will wait to acquire a database lock before returning SQLITE_BUSY.
+    db_sqlite_busy_timeout: int = Field(default=5000, ge=1000, le=60000, description="SQLite busy timeout in milliseconds (default: 5000ms)")
+
     # Metrics Cleanup Configuration (automatic deletion of old metrics)
     metrics_cleanup_enabled: bool = Field(default=True, description="Enable automatic cleanup of old metrics data")
     metrics_retention_days: int = Field(default=7, ge=1, le=365, description="Days to retain raw metrics before cleanup (fallback when rollup disabled)")
