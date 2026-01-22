@@ -1047,7 +1047,10 @@ services:
   # emulation may not work properly.
   ###############################################################################
   fast_time_server:
-    image: ghcr.io/ibm/fast-time-server:latest
+    build:
+      context: ./mcp-servers/go/fast-time-server
+      dockerfile: Dockerfile
+    image: mcpgateway/fast-time-server:latest
     restart: unless-stopped
     networks: [mcpnet]
     ports:
