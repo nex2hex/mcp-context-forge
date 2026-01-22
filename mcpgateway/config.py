@@ -1302,14 +1302,7 @@ class Settings(BaseSettings):
     mcp_session_pool_health_check_methods: List[str] = ["ping", "skip"]
     # Timeout in seconds for each health check attempt
     mcp_session_pool_health_check_timeout: float = 5.0
-    mcp_session_pool_identity_headers: List[str] = [
-        "authorization",
-        "x-tenant-id",
-        "x-user-id",
-        "x-api-key",
-        "cookie",
-        "x-mcp-session-id"
-    ]
+    mcp_session_pool_identity_headers: List[str] = ["authorization", "x-tenant-id", "x-user-id", "x-api-key", "cookie", "x-mcp-session-id"]
     mcpgateway_session_affinity_enabled: bool = False  # Global session affinity toggle
     mcpgateway_session_affinity_ttl: int = 3600  # Session affinity binding TTL
     mcpgateway_session_affinity_max_sessions: int = 1  # Max sessions per identity for affinity

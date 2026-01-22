@@ -909,3 +909,189 @@ class TestContextManager:
             assert pool._pools[pool_key].qsize() == 1
 
         await pool.close_all()
+
+
+class TestSessionAffinity:
+    """Tests for session affinity features."""
+
+    @pytest.mark.asyncio
+    async def test_identity_hash_uses_x_mcp_session_id_when_affinity_enabled(self):
+        """Test that x-mcp-session-id is used for identity hash when session affinity is enabled."""
+        pool = MCPSessionPool()
+
+        # Test with session affinity enabled
+        with patch("mcpgateway.services.mcp_session_pool.settings") as mock_settings:
+            mock_settings.mcpgateway_session_affinity_enabled = True
+
+            # Headers with x-mcp-session-id
+            headers_with_session = {
+                "Authorization": "Bearer token123",
+                "x-mcp-session-id": "session-abc-123",
+            }
+
+            # Headers with different token but same session ID
+            headers_with_same_session = {
+                "Authorization": "Bearer different-token-456",
+                "x-mcp-session-id": "session-abc-123",
+            }
+
+            # Compute identity hashes
+            hash1 = pool._compute_identity_hash(headers_with_session)
+            hash2 = pool._compute_identity_hash(headers_with_same_session)
+
+            # Both should produce the same identity hash (based on session ID)
+            assert hash1 == hash2
+            assert hash1 != "anonymous"
+
+            # Verify it's based on the session ID
+            expected_hash = hashlib.sha256("session-abc-123".encode()).hexdigest()
+            assert hash1 == expected_hash
+
+        await pool.close_all()
+
+    @pytest.mark.asyncio
+    async def test_identity_hash_falls_back_without_x_mcp_session_id(self):
+        """Test that identity hash falls back to regular headers when x-mcp-session-id is absent."""
+        pool = MCPSessionPool()
+
+        with patch("mcpgateway.services.mcp_session_pool.settings") as mock_settings:
+            mock_settings.mcpgateway_session_affinity_enabled = True
+
+            # Headers without x-mcp-session-id
+            headers_without_session = {
+                "Authorization": "Bearer token123",
+            }
+
+            # Should fall back to regular identity header hashing
+            identity_hash = pool._compute_identity_hash(headers_without_session)
+
+            # Should not be anonymous (has Authorization header)
+            assert identity_hash != "anonymous"
+
+            # Should be deterministic
+            identity_hash2 = pool._compute_identity_hash(headers_without_session)
+            assert identity_hash == identity_hash2
+
+        await pool.close_all()
+
+    @pytest.mark.asyncio
+    async def test_acquire_raises_error_when_bound_to_different_worker(self):
+        """Test that acquire() raises RuntimeError when session is bound to a different worker."""
+        pool = MCPSessionPool()
+
+        # Mock session registry to return a binding for a different worker
+        mock_binding = {
+            "upstream_url": "http://test:8080",
+            "upstream_identity_hash": "some-hash",
+            "upstream_transport_type": "STREAMABLE_HTTP",
+            "worker_id": "worker-2",
+        }
+
+        # Create a mock registry object
+        mock_registry = MagicMock()
+        mock_registry.get_upstream_binding = AsyncMock(return_value=mock_binding)
+
+        # Mock the module-level import inside acquire()
+        import mcpgateway.cache.session_registry
+        with patch.object(mcpgateway.cache.session_registry, 'session_registry', mock_registry):
+            # Set current worker to worker-1
+            with patch.dict("os.environ", {"WORKER_ID": "worker-1"}):
+                headers = {"x-mcp-session-id": "session-123"}
+
+                # Should raise RuntimeError for wrong worker
+                with pytest.raises(RuntimeError, match="Session not found on this worker"):
+                    await pool.acquire("http://test:8080", headers=headers)
+
+        await pool.close_all()
+
+    @pytest.mark.asyncio
+    async def test_acquire_succeeds_when_bound_to_same_worker(self):
+        """Test that acquire() succeeds when session is bound to the current worker."""
+        pool = MCPSessionPool()
+
+        # Create a mock session
+        mock_session = PooledSession(
+            session=MagicMock(),
+            transport_context=MagicMock(),
+            url="http://test:8080",
+            identity_key="test-identity",
+            transport_type=TransportType.STREAMABLE_HTTP,
+            headers={"x-mcp-session-id": "session-123"},
+        )
+
+        # Manually add the session to the pool to simulate it exists locally
+        pool_key = pool._make_pool_key(
+            "http://test:8080",
+            {"x-mcp-session-id": "session-123"},
+            TransportType.STREAMABLE_HTTP,
+            "anonymous",
+            "",
+        )
+        pool._pools[pool_key] = asyncio.Queue()
+        pool._pools[pool_key].put_nowait(mock_session)
+        pool._pool_last_used[pool_key] = time.time()
+        pool._semaphores[pool_key] = asyncio.Semaphore(pool._max_sessions)
+        pool._locks[pool_key] = asyncio.Lock()
+        pool._active[pool_key] = set()
+
+        # Mock session registry to return a binding for the same worker
+        mock_binding = {
+            "upstream_url": "http://test:8080",
+            "upstream_identity_hash": pool_key[2],  # Match the pool key's identity hash
+            "upstream_transport_type": "STREAMABLE_HTTP",
+            "worker_id": "worker-1",
+        }
+
+        # Create a mock registry object
+        mock_registry = MagicMock()
+        mock_registry.get_upstream_binding = AsyncMock(return_value=mock_binding)
+
+        # Mock the module-level import
+        import mcpgateway.cache.session_registry
+        with patch.object(mcpgateway.cache.session_registry, 'session_registry', mock_registry):
+            # Set current worker to worker-1 (same as binding)
+            with patch.dict("os.environ", {"WORKER_ID": "worker-1"}):
+                headers = {"x-mcp-session-id": "session-123"}
+
+                # Should succeed - we're on the correct worker
+                session = await pool.acquire("http://test:8080", headers=headers)
+                assert session is not None
+                assert session.session is not None
+
+                # Release it back
+                await pool.release(session)
+
+        await pool.close_all()
+
+    @pytest.mark.asyncio
+    async def test_acquire_succeeds_without_binding(self):
+        """Test that acquire() succeeds normally when no binding exists."""
+        pool = MCPSessionPool()
+
+        with patch.object(pool, "_create_session", new_callable=AsyncMock) as mock_create:
+            mock_session = PooledSession(
+                session=MagicMock(),
+                transport_context=MagicMock(),
+                url="http://test:8080",
+                identity_key="anonymous",
+                transport_type=TransportType.STREAMABLE_HTTP,
+                headers={},
+            )
+            mock_create.return_value = mock_session
+
+            # Create a mock registry object that returns no binding
+            mock_registry = MagicMock()
+            mock_registry.get_upstream_binding = AsyncMock(return_value=None)
+
+            # Mock the module-level import
+            import mcpgateway.cache.session_registry
+            with patch.object(mcpgateway.cache.session_registry, 'session_registry', mock_registry):
+                headers = {"x-mcp-session-id": "session-new"}
+
+                # Should succeed - no binding means first call for this session
+                session = await pool.acquire("http://test:8080", headers=headers)
+                assert session is not None
+
+                await pool.release(session)
+
+        await pool.close_all()

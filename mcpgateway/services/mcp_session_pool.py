@@ -29,9 +29,9 @@ from __future__ import annotations
 import asyncio
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from enum import Enum
 import hashlib
 import logging
+import os
 import time
 from typing import Any, Callable, Dict, Optional, Set, Tuple, TYPE_CHECKING
 
@@ -43,9 +43,10 @@ from mcp.client.streamable_http import streamablehttp_client
 from mcp.shared.session import RequestResponder
 import mcp.types as mcp_types
 import orjson
-from mcpgateway.config import settings
 
 # First-Party
+from mcpgateway.common.enums import TransportType
+from mcpgateway.config import settings
 from mcpgateway.utils.url_auth import sanitize_url_for_logging
 
 # JSON-RPC standard error code for method not found
@@ -56,13 +57,6 @@ if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
 logger = logging.getLogger(__name__)
-
-
-class TransportType(Enum):
-    """Supported MCP transport types."""
-
-    SSE = "sse"
-    STREAMABLE_HTTP = "streamablehttp"
 
 
 @dataclass(eq=False)  # eq=False makes instances hashable by object identity
@@ -503,6 +497,7 @@ class MCPSessionPool:  # pylint: disable=too-many-instance-attributes
         if downstream_session_id:
             try:
                 # Lazy import to avoid circular dependency
+                # First-Party
                 from mcpgateway.cache.session_registry import session_registry  # pylint: disable=import-outside-toplevel
 
                 binding = await session_registry.get_upstream_binding(downstream_session_id)
@@ -529,10 +524,7 @@ class MCPSessionPool:  # pylint: disable=too-many-instance-attributes
                             f"but request received on worker '{current_worker}'. "
                             f"Configure load balancer with sticky sessions based on x-mcp-session-id."
                         )
-                        raise RuntimeError(
-                            f"Session not found on this worker. Bound to '{bound_worker}'. "
-                            f"Configure sticky sessions in load balancer."
-                        )
+                        raise RuntimeError(f"Session not found on this worker. Bound to '{bound_worker}'. " f"Configure sticky sessions in load balancer.")
                     # Pool exists locally - we're the right worker
                     logger.debug(f"Session affinity: found session {downstream_session_id[:8]}... in local pool")
             except RuntimeError:

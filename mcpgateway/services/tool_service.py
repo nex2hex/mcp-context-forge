@@ -44,6 +44,7 @@ from sqlalchemy.orm import joinedload, selectinload, Session
 
 # First-Party
 from mcpgateway.cache.global_config_cache import global_config_cache
+from mcpgateway.common.enums import TransportType
 from mcpgateway.common.models import Gateway as PydanticGateway
 from mcpgateway.common.models import TextContent
 from mcpgateway.common.models import Tool as PydanticTool
@@ -72,21 +73,6 @@ from mcpgateway.schemas import AuthenticationValues, ToolCreate, ToolRead, ToolU
 from mcpgateway.services.audit_trail_service import get_audit_trail_service
 from mcpgateway.services.event_service import EventService
 from mcpgateway.services.logging_service import LoggingService
-from mcpgateway.services.mcp_session_pool import get_mcp_session_pool, TransportType
-
-# Session affinity: import session_registry for upstream binding tracking
-# This enables multi-worker coordination and explicit session tracking
-session_registry = None  # Lazy import to avoid circular dependencies
-
-
-def _get_session_registry():
-    """Lazy import of session_registry to avoid circular dependencies."""
-    global session_registry
-    if session_registry is None:
-        from mcpgateway.cache.session_registry import session_registry as _sr  # pylint: disable=import-outside-toplevel
-
-        session_registry = _sr
-    return session_registry
 from mcpgateway.services.metrics_cleanup_service import delete_metrics_in_batches, pause_rollup_during_purge
 from mcpgateway.services.metrics_query_service import get_top_performers_combined
 from mcpgateway.services.oauth_manager import OAuthManager
@@ -106,6 +92,26 @@ from mcpgateway.utils.sqlalchemy_modifier import json_contains_tag_expr
 from mcpgateway.utils.ssl_context_cache import get_cached_ssl_context
 from mcpgateway.utils.url_auth import apply_query_param_auth, sanitize_exception_message, sanitize_url_for_logging
 from mcpgateway.utils.validate_signature import validate_signature
+
+# Session affinity: lazy import session_registry for upstream binding tracking
+# This enables multi-worker coordination and explicit session tracking
+_session_registry_cache = None  # Lazy import cache to avoid circular dependencies  # pylint: disable=invalid-name
+
+
+def _get_session_registry():
+    """Lazy import of session_registry to avoid circular dependencies.
+
+    Returns:
+        The session registry singleton.
+    """
+    global _session_registry_cache  # pylint: disable=global-statement
+    if _session_registry_cache is None:
+        # First-Party
+        from mcpgateway.cache.session_registry import session_registry as _sr  # pylint: disable=import-outside-toplevel
+
+        _session_registry_cache = _sr
+    return _session_registry_cache
+
 
 # Cache import (lazy to avoid circular dependencies)
 _REGISTRY_CACHE = None
@@ -2973,6 +2979,11 @@ class ToolService:
                             pool = None
                             if settings.mcp_session_pool_enabled:
                                 try:
+                                    # Lazy import to avoid circular dependency
+                                    # Lazy import to avoid circular dependency
+                                    # First-Party
+                                    from mcpgateway.services.mcp_session_pool import get_mcp_session_pool  # pylint: disable=import-outside-toplevel
+
                                     pool = get_mcp_session_pool()
                                     use_pool = True
                                 except RuntimeError:
@@ -3002,7 +3013,7 @@ class ToolService:
                                                     upstream_url=server_url,
                                                     upstream_identity_hash=pooled.identity_key if hasattr(pooled, "identity_key") else "unknown",
                                                     upstream_transport_type="SSE",
-                                                    worker_id=None,  # TODO: Add worker ID for multi-worker deployments
+                                                    worker_id=os.getenv("WORKER_ID"),
                                                 )
                                                 logger.debug(f"Session affinity: bound {downstream_session_id[:8]}... to upstream SSE session")
                                         except Exception as e:
@@ -3094,6 +3105,10 @@ class ToolService:
                             pool = None
                             if settings.mcp_session_pool_enabled:
                                 try:
+                                    # Lazy import to avoid circular dependency
+                                    # First-Party
+                                    from mcpgateway.services.mcp_session_pool import get_mcp_session_pool  # pylint: disable=import-outside-toplevel
+
                                     pool = get_mcp_session_pool()
                                     use_pool = True
                                 except RuntimeError:
@@ -3123,7 +3138,7 @@ class ToolService:
                                                     upstream_url=server_url,
                                                     upstream_identity_hash=pooled.identity_key if hasattr(pooled, "identity_key") else "unknown",
                                                     upstream_transport_type="STREAMABLE_HTTP",
-                                                    worker_id=None,  # TODO: Add worker ID for multi-worker deployments
+                                                    worker_id=os.getenv("WORKER_ID"),
                                                 )
                                                 logger.debug(f"Session affinity: bound {downstream_session_id[:8]}... to upstream STREAMABLE_HTTP session")
                                         except Exception as e:

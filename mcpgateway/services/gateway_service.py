@@ -74,6 +74,7 @@ except ImportError:
     logging.info("Redis is not utilized in this environment.")
 
 # First-Party
+from mcpgateway.common.enums import TransportType
 from mcpgateway.config import settings
 from mcpgateway.db import fresh_db_session
 from mcpgateway.db import Gateway as DbGateway
@@ -92,7 +93,6 @@ from mcpgateway.services.audit_trail_service import get_audit_trail_service
 from mcpgateway.services.event_service import EventService
 from mcpgateway.services.http_client_service import get_default_verify, get_http_timeout, get_isolated_http_client
 from mcpgateway.services.logging_service import LoggingService
-from mcpgateway.services.mcp_session_pool import get_mcp_session_pool, register_gateway_capabilities_for_notifications, TransportType
 from mcpgateway.services.oauth_manager import OAuthManager
 from mcpgateway.services.prompt_service import PromptService
 from mcpgateway.services.resource_service import ResourceService
@@ -1263,6 +1263,10 @@ class GatewayService:  # pylint: disable=too-many-instance-attributes
             gateway.last_seen = datetime.now(timezone.utc)
 
             # Register capabilities for notification-driven actions
+            # Lazy import to avoid circular dependency
+            # First-Party
+            from mcpgateway.services.mcp_session_pool import register_gateway_capabilities_for_notifications  # pylint: disable=import-outside-toplevel
+
             register_gateway_capabilities_for_notifications(gateway.id, capabilities)
 
             # Add new items to DB in chunks to prevent lock escalation
@@ -1974,6 +1978,10 @@ class GatewayService:  # pylint: disable=too-many-instance-attributes
                     gateway.capabilities = capabilities
 
                     # Register capabilities for notification-driven actions
+                    # Lazy import to avoid circular dependency
+                    # First-Party
+                    from mcpgateway.services.mcp_session_pool import register_gateway_capabilities_for_notifications  # pylint: disable=import-outside-toplevel
+
                     register_gateway_capabilities_for_notifications(gateway.id, capabilities)
 
                     gateway.tools = [tool for tool in gateway.tools if tool.original_name in new_tool_names]  # keep only still-valid rows
@@ -2407,6 +2415,10 @@ class GatewayService:  # pylint: disable=too-many-instance-attributes
                         gateway.capabilities = capabilities
 
                         # Register capabilities for notification-driven actions
+                        # Lazy import to avoid circular dependency
+                        # First-Party
+                        from mcpgateway.services.mcp_session_pool import register_gateway_capabilities_for_notifications  # pylint: disable=import-outside-toplevel
+
                         register_gateway_capabilities_for_notifications(gateway.id, capabilities)
 
                         gateway.tools = [tool for tool in gateway.tools if tool.original_name in new_tool_names]  # keep only still-valid rows
@@ -3436,6 +3448,11 @@ class GatewayService:  # pylint: disable=too-many-instance-attributes
                         pool = None
                         if settings.mcp_session_pool_enabled:
                             try:
+                                # Lazy import to avoid circular dependency
+                                # Lazy import to avoid circular dependency
+                                # First-Party
+                                from mcpgateway.services.mcp_session_pool import get_mcp_session_pool  # pylint: disable=import-outside-toplevel
+
                                 pool = get_mcp_session_pool()
                                 use_pool = True
                             except RuntimeError:

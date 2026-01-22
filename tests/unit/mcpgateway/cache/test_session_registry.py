@@ -32,6 +32,7 @@ import json
 import logging
 import re
 import sys
+import time
 from typing import Any, Dict, List
 from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
@@ -91,6 +92,13 @@ class MockRedis:
         if self.should_fail:
             raise Exception("Redis connection failed")
         self.data[key] = {"value": value, "ttl": ttl}
+
+    async def get(self, key):
+        if self.should_fail:
+            raise Exception("Redis connection failed")
+        if key in self.data:
+            return self.data[key]["value"]
+        return None
 
     async def exists(self, key):
         if self.should_fail:
@@ -1739,6 +1747,211 @@ async def test_refresh_redis_sessions_error(monkeypatch, caplog):
         await registry._refresh_redis_sessions()
 
         assert "Error refreshing session error_session" in caplog.text
+
+        await registry.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_bind_upstream_session_stores_in_memory(registry: SessionRegistry):
+    """Test bind_upstream_session() stores binding in memory."""
+    session_id = "test-session-123"
+
+    await registry.bind_upstream_session(
+        downstream_session_id=session_id,
+        upstream_url="http://upstream:8080",
+        upstream_identity_hash="identity-hash-abc",
+        upstream_transport_type="SSE",
+        worker_id="worker-1",
+    )
+
+    # Verify binding exists
+    assert await registry.has_upstream_binding(session_id)
+
+    # Verify binding contents
+    binding = await registry.get_upstream_binding(session_id)
+    assert binding is not None
+    assert binding["upstream_url"] == "http://upstream:8080"
+    assert binding["upstream_identity_hash"] == "identity-hash-abc"
+    assert binding["upstream_transport_type"] == "SSE"
+    assert binding["worker_id"] == "worker-1"
+    assert "created_at" in binding
+
+
+@pytest.mark.asyncio
+async def test_bind_upstream_session_stores_in_redis(monkeypatch):
+    """Test bind_upstream_session() stores binding in Redis with TTL."""
+    mock_redis = MockRedis()
+
+    monkeypatch.setattr("mcpgateway.cache.session_registry.REDIS_AVAILABLE", True)
+
+    # Mock the shared Redis client factory to return our mock
+    async def mock_get_redis_client():
+        return mock_redis
+
+    with patch("mcpgateway.cache.session_registry.get_redis_client", mock_get_redis_client):
+        registry = SessionRegistry(backend="redis", redis_url="redis://localhost:6379")
+        await registry.initialize()
+
+        session_id = "test-session-456"
+
+        await registry.bind_upstream_session(
+            downstream_session_id=session_id,
+            upstream_url="http://upstream:9090",
+            upstream_identity_hash="identity-hash-xyz",
+            upstream_transport_type="STREAMABLE_HTTP",
+            worker_id="worker-2",
+        )
+
+        # Verify binding is in Redis with correct key
+        redis_key = f"mcp:affinity:{session_id}"
+        assert redis_key in mock_redis.data
+
+        # Verify binding data
+        stored_data = mock_redis.data[redis_key]["value"]
+        binding = orjson.loads(stored_data)
+        assert binding["upstream_url"] == "http://upstream:9090"
+        assert binding["upstream_identity_hash"] == "identity-hash-xyz"
+        assert binding["upstream_transport_type"] == "STREAMABLE_HTTP"
+        assert binding["worker_id"] == "worker-2"
+
+        # Verify TTL was set (should be session_ttl)
+        assert mock_redis.data[redis_key]["ttl"] > 0
+
+        await registry.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_get_upstream_binding_returns_none_when_not_bound(registry: SessionRegistry):
+    """Test get_upstream_binding() returns None when no binding exists."""
+    binding = await registry.get_upstream_binding("non-existent-session")
+    assert binding is None
+
+    # has_upstream_binding should also return False
+    assert not await registry.has_upstream_binding("non-existent-session")
+
+
+@pytest.mark.asyncio
+async def test_get_upstream_binding_fetches_from_redis(monkeypatch):
+    """Test get_upstream_binding() fetches from Redis when not in local cache."""
+    mock_redis = MockRedis()
+
+    monkeypatch.setattr("mcpgateway.cache.session_registry.REDIS_AVAILABLE", True)
+
+    async def mock_get_redis_client():
+        return mock_redis
+
+    with patch("mcpgateway.cache.session_registry.get_redis_client", mock_get_redis_client):
+        registry = SessionRegistry(backend="redis", redis_url="redis://localhost:6379")
+        await registry.initialize()
+
+        session_id = "redis-only-session"
+
+        # Manually insert binding into Redis (bypassing local cache)
+        binding_data = {
+            "upstream_url": "http://redis-upstream:8080",
+            "upstream_identity_hash": "redis-hash",
+            "upstream_transport_type": "SSE",
+            "worker_id": "redis-worker",
+            "created_at": time.time(),
+        }
+        redis_key = f"mcp:affinity:{session_id}"
+        mock_redis.data[redis_key] = {"value": orjson.dumps(binding_data), "ttl": 3600}
+
+        # Fetch binding - should get from Redis
+        binding = await registry.get_upstream_binding(session_id)
+        assert binding is not None
+        assert binding["upstream_url"] == "http://redis-upstream:8080"
+        assert binding["upstream_identity_hash"] == "redis-hash"
+        assert binding["worker_id"] == "redis-worker"
+
+        # Verify it was cached locally for future lookups
+        assert session_id in registry._upstream_bindings
+
+        await registry.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_remove_session_cleans_up_affinity_binding(monkeypatch):
+    """Test remove_session() removes affinity binding from both memory and Redis."""
+    mock_redis = MockRedis()
+
+    monkeypatch.setattr("mcpgateway.cache.session_registry.REDIS_AVAILABLE", True)
+
+    async def mock_get_redis_client():
+        return mock_redis
+
+    with patch("mcpgateway.cache.session_registry.get_redis_client", mock_get_redis_client):
+        registry = SessionRegistry(backend="redis", redis_url="redis://localhost:6379")
+        await registry.initialize()
+
+        session_id = "cleanup-test-session"
+
+        # Add a transport
+        transport = FakeSSETransport(session_id)
+        await registry.add_session(session_id, transport)
+
+        # Create binding
+        await registry.bind_upstream_session(
+            downstream_session_id=session_id,
+            upstream_url="http://cleanup:8080",
+            upstream_identity_hash="cleanup-hash",
+            upstream_transport_type="SSE",
+            worker_id="cleanup-worker",
+        )
+
+        # Verify binding exists in both locations
+        assert await registry.has_upstream_binding(session_id)
+        redis_key = f"mcp:affinity:{session_id}"
+        assert redis_key in mock_redis.data
+
+        # Remove session
+        await registry.remove_session(session_id)
+
+        # Verify binding is cleaned up from both locations
+        assert not await registry.has_upstream_binding(session_id)
+        assert redis_key not in mock_redis.data
+
+        await registry.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_remove_upstream_binding_only_removes_binding(monkeypatch):
+    """Test remove_upstream_binding() removes only the binding, not the session."""
+    mock_redis = MockRedis()
+
+    monkeypatch.setattr("mcpgateway.cache.session_registry.REDIS_AVAILABLE", True)
+
+    async def mock_get_redis_client():
+        return mock_redis
+
+    with patch("mcpgateway.cache.session_registry.get_redis_client", mock_get_redis_client):
+        registry = SessionRegistry(backend="redis", redis_url="redis://localhost:6379")
+        await registry.initialize()
+
+        session_id = "partial-cleanup-session"
+
+        # Add a transport
+        transport = FakeSSETransport(session_id)
+        await registry.add_session(session_id, transport)
+
+        # Create binding
+        await registry.bind_upstream_session(
+            downstream_session_id=session_id,
+            upstream_url="http://test:8080",
+            upstream_identity_hash="test-hash",
+            upstream_transport_type="SSE",
+        )
+
+        # Verify both exist
+        assert registry.get_session_sync(session_id) is not None
+        assert await registry.has_upstream_binding(session_id)
+
+        # Remove only the binding
+        await registry.remove_upstream_binding(session_id)
+
+        # Session should still exist, but binding should be gone
+        assert registry.get_session_sync(session_id) is not None
+        assert not await registry.has_upstream_binding(session_id)
 
         await registry.shutdown()
 

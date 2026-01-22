@@ -5204,6 +5204,10 @@ async def handle_rpc(request: Request, db: Session = Depends(get_db), user=Depen
         elif method == "tools/call":  # pylint: disable=too-many-nested-blocks
             # Get request headers
             headers = {k.lower(): v for k, v in request.headers.items()}
+            # Inject x-mcp-session-id for session affinity if mcp-session-id is present
+            mcp_session_id = headers.get("mcp-session-id")
+            if mcp_session_id:
+                headers["x-mcp-session-id"] = mcp_session_id
             name = params.get("name")
             arguments = params.get("arguments", {})
             meta_data = params.get("_meta", None)
@@ -5457,6 +5461,10 @@ async def handle_rpc(request: Request, db: Session = Depends(get_db), user=Depen
             # This allows both old format (method=tool_name) and new format (method=tools/call)
             # Standard
             headers = {k.lower(): v for k, v in request.headers.items()}
+            # Inject x-mcp-session-id for session affinity if mcp-session-id is present
+            mcp_session_id = headers.get("mcp-session-id")
+            if mcp_session_id:
+                headers["x-mcp-session-id"] = mcp_session_id
 
             # Get authorization context (same as tools/call)
             auth_user_email, auth_token_teams, auth_is_admin = _get_rpc_filter_context(request, user)

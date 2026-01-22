@@ -44,6 +44,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 # First-Party
+from mcpgateway.common.enums import TransportType
 from mcpgateway.common.models import ResourceContent, ResourceTemplate, TextContent
 from mcpgateway.common.validators import SecurityValidator
 from mcpgateway.config import settings
@@ -59,7 +60,6 @@ from mcpgateway.schemas import ResourceCreate, ResourceMetrics, ResourceRead, Re
 from mcpgateway.services.audit_trail_service import get_audit_trail_service
 from mcpgateway.services.event_service import EventService
 from mcpgateway.services.logging_service import LoggingService
-from mcpgateway.services.mcp_session_pool import get_mcp_session_pool, TransportType
 from mcpgateway.services.metrics_cleanup_service import delete_metrics_in_batches, pause_rollup_during_purge
 from mcpgateway.services.oauth_manager import OAuthManager
 from mcpgateway.services.observability_service import current_trace_id, ObservabilityService
@@ -1731,6 +1731,11 @@ class ResourceService:
                                 pool = None
                                 if settings.mcp_session_pool_enabled:
                                     try:
+                                        # Lazy import to avoid circular dependency
+                                        # Lazy import to avoid circular dependency
+                                        # First-Party
+                                        from mcpgateway.services.mcp_session_pool import get_mcp_session_pool  # pylint: disable=import-outside-toplevel
+
                                         pool = get_mcp_session_pool()
                                         use_pool = True
                                     except RuntimeError:
@@ -1813,6 +1818,10 @@ class ResourceService:
                                 pool = None
                                 if settings.mcp_session_pool_enabled:
                                     try:
+                                        # Lazy import to avoid circular dependency
+                                        # First-Party
+                                        from mcpgateway.services.mcp_session_pool import get_mcp_session_pool  # pylint: disable=import-outside-toplevel
+
                                         pool = get_mcp_session_pool()
                                         use_pool = True
                                     except RuntimeError:

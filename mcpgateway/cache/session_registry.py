@@ -69,7 +69,6 @@ from mcpgateway import __version__
 from mcpgateway.common.models import Implementation, InitializeResult, ServerCapabilities
 from mcpgateway.config import settings
 from mcpgateway.db import get_db, SessionMessageRecord, SessionRecord
-from mcpgateway.services import PromptService, ResourceService, ToolService
 from mcpgateway.services.logging_service import LoggingService
 from mcpgateway.transports import SSETransport
 from mcpgateway.utils.create_jwt_token import create_jwt_token
@@ -81,9 +80,6 @@ from mcpgateway.validation.jsonrpc import JSONRPCError
 logging_service: LoggingService = LoggingService()
 logger = logging_service.get_logger(__name__)
 
-tool_service: ToolService = ToolService()
-resource_service: ResourceService = ResourceService()
-prompt_service: PromptService = PromptService()
 
 try:
     # Third-Party
@@ -888,8 +884,7 @@ class SessionRegistry(SessionBackend):
                 bound_worker = binding.get("worker_id", "unknown")
                 current_worker = os.getenv("WORKER_ID", "local")
                 logger.debug(
-                    f"Session affinity: skipping message for session {session_id[:8]}... "
-                    f"(bound to worker '{bound_worker}', current worker '{current_worker}', transport not found locally)"
+                    f"Session affinity: skipping message for session {session_id[:8]}... " f"(bound to worker '{bound_worker}', current worker '{current_worker}', transport not found locally)"
                 )
                 return  # Don't process messages for sessions on other workers
 
@@ -1733,7 +1728,7 @@ class SessionRegistry(SessionBackend):
                     token = await create_jwt_token(payload)
 
                 session_id = transport.session_id
-                
+
                 headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json", "x-mcp-session-id": session_id}
                 # Extract root URL from base_url (remove /servers/{id} path)
                 parsed_url = urlparse(base_url)
@@ -1803,3 +1798,8 @@ class SessionRegistry(SessionBackend):
                             "params": {},
                         }
                     )
+
+
+# Global session registry instance (imported lazily by mcp_session_pool.py)
+# This will be initialized properly by main.py during application startup
+session_registry: Optional[SessionRegistry] = None
