@@ -78,11 +78,14 @@ async def test_require_permission_granted(monkeypatch):
     async def dummy_func(user=None):
         return "ok"
 
-    mock_db = MagicMock()
-    mock_user = {"email": "user@example.com", "db": mock_db}
+    # Note: user context no longer includes "db" - decorators use fresh_db_session() (Issue #1865)
+    mock_user = {"email": "user@example.com"}
     mock_perm_service = AsyncMock()
     mock_perm_service.check_permission.return_value = True
     monkeypatch.setattr(rbac, "PermissionService", lambda db: mock_perm_service)
+    # Mock fresh_db_session to return a mock db
+    mock_db = MagicMock()
+    monkeypatch.setattr(rbac, "fresh_db_session", lambda: MagicMock(__enter__=lambda s: mock_db, __exit__=lambda s, *args: None))
 
     decorated = rbac.require_permission("tools.read")(dummy_func)
     result = await decorated(user=mock_user)
@@ -94,11 +97,14 @@ async def test_require_admin_permission_granted(monkeypatch):
     async def dummy_func(user=None):
         return "admin-ok"
 
-    mock_db = MagicMock()
-    mock_user = {"email": "user@example.com", "db": mock_db}
+    # Note: user context no longer includes "db" - decorators use fresh_db_session() (Issue #1865)
+    mock_user = {"email": "user@example.com"}
     mock_perm_service = AsyncMock()
     mock_perm_service.check_admin_permission.return_value = True
     monkeypatch.setattr(rbac, "PermissionService", lambda db: mock_perm_service)
+    # Mock fresh_db_session to return a mock db
+    mock_db = MagicMock()
+    monkeypatch.setattr(rbac, "fresh_db_session", lambda: MagicMock(__enter__=lambda s: mock_db, __exit__=lambda s, *args: None))
 
     decorated = rbac.require_admin_permission()(dummy_func)
     result = await decorated(user=mock_user)
@@ -110,11 +116,14 @@ async def test_require_any_permission_granted(monkeypatch):
     async def dummy_func(user=None):
         return "any-ok"
 
-    mock_db = MagicMock()
-    mock_user = {"email": "user@example.com", "db": mock_db}
+    # Note: user context no longer includes "db" - decorators use fresh_db_session() (Issue #1865)
+    mock_user = {"email": "user@example.com"}
     mock_perm_service = AsyncMock()
     mock_perm_service.check_permission.side_effect = [False, True]
     monkeypatch.setattr(rbac, "PermissionService", lambda db: mock_perm_service)
+    # Mock fresh_db_session to return a mock db
+    mock_db = MagicMock()
+    monkeypatch.setattr(rbac, "fresh_db_session", lambda: MagicMock(__enter__=lambda s: mock_db, __exit__=lambda s, *args: None))
 
     decorated = rbac.require_any_permission(["tools.read", "tools.execute"])(dummy_func)
     result = await decorated(user=mock_user)
@@ -123,12 +132,15 @@ async def test_require_any_permission_granted(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_permission_checker_methods(monkeypatch):
-    mock_db = MagicMock()
-    mock_user = {"email": "user@example.com", "db": mock_db}
+    # Note: user context no longer includes "db" - PermissionChecker uses fresh_db_session() (Issue #1865)
+    mock_user = {"email": "user@example.com"}
     mock_perm_service = AsyncMock()
     mock_perm_service.check_permission.return_value = True
     mock_perm_service.check_admin_permission.return_value = True
     monkeypatch.setattr(rbac, "PermissionService", lambda db: mock_perm_service)
+    # Mock fresh_db_session to return a mock db
+    mock_db = MagicMock()
+    monkeypatch.setattr(rbac, "fresh_db_session", lambda: MagicMock(__enter__=lambda s: mock_db, __exit__=lambda s, *args: None))
 
     checker = rbac.PermissionChecker(mock_user)
     assert await checker.has_permission("tools.read")
