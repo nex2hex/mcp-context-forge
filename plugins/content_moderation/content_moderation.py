@@ -158,10 +158,10 @@ class CategoryConfig(BaseModel):
     @classmethod
     def compile_patterns(cls, v: Any) -> List[Pattern[str]]:
         """Compile string patterns to regex Pattern objects.
-        
+
         Args:
             v: List of regex pattern strings or Pattern objects.
-            
+
         Returns:
             List of compiled Pattern objects.
         """

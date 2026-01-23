@@ -94,10 +94,10 @@ class FieldOverride(BaseModel):
     @classmethod
     def compile_pattern(cls, v: Any) -> Pattern[str]:
         """Compile pattern string to regex Pattern object.
-        
+
         Args:
             v: Regex pattern string or Pattern object.
-            
+
         Returns:
             Compiled Pattern object.
         """

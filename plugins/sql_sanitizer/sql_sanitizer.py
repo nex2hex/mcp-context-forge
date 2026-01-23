@@ -76,14 +76,14 @@ class SQLSanitizerConfig(BaseModel):
     @field_validator('blocked_statements', mode='before')
     @classmethod
     def compile_patterns(cls, v: Any) -> list[Pattern[str]]:
-        \"\"\"Compile string patterns to regex Pattern objects.
-        
+        """Compile string patterns to regex Pattern objects.
+
         Args:
             v: List of regex pattern strings or Pattern objects.
-            
+
         Returns:
             List of compiled Pattern objects.
-        \"\"\"
+        """
         if not isinstance(v, list):
             return v
         compiled = []

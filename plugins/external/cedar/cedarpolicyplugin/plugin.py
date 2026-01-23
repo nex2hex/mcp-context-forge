@@ -14,9 +14,6 @@ import re
 from typing import Any
 from urllib.parse import urlparse
 
-# Precompiled regex pattern for DSL parsing
-_DSL_ROLE_PATTERN_RE = re.compile(r"\[role:([A-Za-z0-9_]+):(resource|prompt|server|agent)/([^\]]+)\]")
-
 # Third-Party
 from cedarpolicyplugin.schema import CedarConfig, CedarInput
 from cedarpy import AuthzResult, Decision, is_authorized
@@ -44,6 +41,9 @@ from mcpgateway.services.logging_service import LoggingService
 # Initialize logging service first
 logging_service = LoggingService()
 logger = logging_service.get_logger(__name__)
+
+# Precompiled regex pattern for DSL parsing
+_DSL_ROLE_PATTERN_RE = re.compile(r"\[role:([A-Za-z0-9_]+):(resource|prompt|server|agent)/([^\]]+)\]")
 
 
 class CedarCodes(str, Enum):

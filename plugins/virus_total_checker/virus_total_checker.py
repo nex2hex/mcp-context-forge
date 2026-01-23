@@ -147,10 +147,10 @@ class VirusTotalConfig(BaseModel):
     @classmethod
     def compile_url_pattern(cls, v: Any) -> Pattern[str]:
         """Compile url_pattern string to regex Pattern object.
-        
+
         Args:
             v: Regex pattern string or Pattern object.
-            
+
         Returns:
             Compiled Pattern object.
         """
@@ -162,10 +162,10 @@ class VirusTotalConfig(BaseModel):
     @classmethod
     def compile_url_pattern_lists(cls, v: Any) -> list[Pattern[str]]:
         """Compile list of pattern strings to regex Pattern objects.
-        
+
         Args:
             v: List of regex pattern strings or Pattern objects.
-            
+
         Returns:
             List of compiled Pattern objects.
         """
