@@ -97,6 +97,8 @@ class SQLSanitizerConfig(BaseModel):
         return compiled
 
     class Config:
+        """Pydantic model configuration."""
+
         arbitrary_types_allowed = True
 
 

@@ -87,6 +87,8 @@ class HarmfulContentConfig(BaseModel):
         super().__init__(**data)
 
     class Config:
+        """Pydantic model configuration."""
+
         arbitrary_types_allowed = True
 
 
